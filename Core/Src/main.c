@@ -230,7 +230,7 @@ int mod4_count = 0;
 uint32_t start_time,end_time, elapsed_time;
 
 
-
+uint8_t act_rx_packet[65];
 uint8_t FinalData[150];
 uint8_t RxData[150];
 uint8_t temp[2];
@@ -372,6 +372,7 @@ static int counterPacket=1;
 
   int gap_time = 2500; // time in ms 3500
 
+
   char test_msg_text1[] = "\\D1\\C2\\P00\\M10\\J00 Hello World.";
   char test_msg_text2[] = "\\D1\\C1\\P128\\M11\\J00ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz+1234567890++0987654321";
   char test_msg_text3[] = "\\D1\\C2\\P112\\M11\\J00 Once when light was the only inhabitant of the multi-verse its sorrow gave birth to a great darkness within it. One day it took this darkness and buried it in the vast beyond, on doing so it returned to joy. However after several centuries had passed, the light realised that its work had not deminished with the passing time and it posited that it was no longer alone.";
@@ -396,11 +397,14 @@ static int counterPacket=1;
 
   TransmissionState transmission_state = INITIAL_STATE;
   uint32_t transmission_timestamp = 0;
-  const uint32_t transmission_delay = 1000; // 500 ms delay before transmission
+  uint32_t transmission_delay = 1000; // 500 ms delay before transmission
+  uint32_t lastRX_time = 0;
 
   const int module_x = 4;  // Define the module number
   uint8_t next;
+  uint8_t following_mod_x;
   volatile bool packetReady_2Dec = false;
+  volatile bool is_spi_receiving = false;
 
 
 
@@ -459,7 +463,7 @@ char searchmod3[] ="three";
 char searchmod4[] ="four";
 int twoFound = 0;
 #define TIMEOUT_MS 5000 // Timeout value in milliseconds
-#define TIMEOUT_MT 1000// Timeout missed transmission
+#define TIMEOUT_MT 3000// Timeout missed transmission
 
 /* USER CODE END 0 */
 
@@ -1062,45 +1066,42 @@ static int build_message_frames(uint8_t* test_text, sSpiBuf* frames, int max_fra
 }
 
 
-uint8_t* send_custom_text(uint8_t *test_msg){
+uint8_t* send_custom_text(uint8_t *test_msg) {
 	int num_frames;
 	int i;
 	//int total_length;
 	uint8_t *text;
 	sSpiBuf send_buffer;
 
-	memset(combined_message,'\0',sizeof(combined_message));
 
 
-	if (test_msg[0] == '\\'){   // user string has escape sequence at start
+	if (test_msg[0] == '\\') {  // user string has escape sequence at start
 		text= test_msg;
-		}
-	else{   // no escape sequence at start of user string
+	}else {  // no escape sequence at start of user string
 
 		sprintf(buffer_1k, "\\D1\\C1\\P149\\M11\\J00%s", test_msg);
 		//HAL_UART_Transmit(&huart2, (uint8_t *)buffer_1k, strlen(buffer_1k), HAL_MAX_DELAY);
-		text= &buffer_1k[0];
-		}
 
+		text= &buffer_1k[0];
+	}
 	num_frames= build_message_frames(text, frame_list, MAX_FRAME_LIST_SIZE, FORWARDFACING);//SALOON FORWARDFACING
 
 	sprintf(msgStatus, "\r\n Number of frames %d \r\n",num_frames);
 	//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
 	//add headers
-	uint8_t echecomm_header[8]={0x32, 0xA1, 0xBA, 0x00, 0x49, 0x53, 0x49, 0x01};
-	uint8_t semitechcomm_header[18]={0x3C, 0x98, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00,  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-	uint8_t end_semih[2]={0x00,0x3E};
+	uint8_t echecomm_header[8]= {0x32, 0xA1, 0xBA, 0x00, 0x49, 0x53, 0x49, 0x01};
+	uint8_t semitechcomm_header[18]= {0x3C, 0x98, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00,  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+	uint8_t end_semih[2]= {0x00,0x3E};
 
 	//sprintf(buffer_1k, "%s \r\n", text);
 	//HAL_UART_Transmit(&huart2, (uint8_t *)buffer_1k, strlen(buffer_1k), HAL_MAX_DELAY);
 	// Calculate the total message length (headers + text)
 
-
 	uint8_t *new_text_ptr=NULL;
 	int new_text_len=0;
 
-	for (i=0;i<num_frames;i++){
+	for (i=0; i<num_frames; i++) {
 		new_text_ptr=frame_list[i].data;
 		new_text_len=frame_list[i].transLen-1;
 		total_length = sizeof(echecomm_header) + sizeof(semitechcomm_header) + new_text_len + sizeof(end_semih);
@@ -1111,23 +1112,23 @@ uint8_t* send_custom_text(uint8_t *test_msg){
 		sprintf(msgStatus, " \r\n Str len %02X \r\n ",new_text_len);
 		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
-
-
 		// Create a buffer with enough space for the complete message
-		//uint8_t combined_message[total_length];
+		//uint8_t combined_message[total_length]; this was made global_last_val
+
 		//sprintf(msgStatus, " \r\n Str len %04X \r\n ",strlen(text));
 		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
 		//Length for semitech header
 		uint8_t calculated_length_phy = sizeof(echecomm_header)+new_text_len;
 		uint8_t total_calculated_length = calculated_length_phy + 12;
 
 		sprintf(msgStatus, " \r\n Calculated Length phy = %d, total = %d \r\n ",calculated_length_phy, total_calculated_length);
 		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
 		// add the modified headers
 
 		semitechcomm_header[5] = total_calculated_length;
 		semitechcomm_header[11] = calculated_length_phy;
-
 
 		// Copy headers into the combined_message buffer
 		memcpy(combined_message, semitechcomm_header, sizeof(semitechcomm_header));
@@ -1136,14 +1137,7 @@ uint8_t* send_custom_text(uint8_t *test_msg){
 		// Copy the text into the combined_message buffer
 		memcpy(combined_message + sizeof(echecomm_header) + sizeof(semitechcomm_header), new_text_ptr, new_text_len);
 
-		//sprintf(msgStatus," \r\n The updated string \r\n");
-		//HAL_UART_Transmit(&huart2,(uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-		for (int k=0; k<sizeof(combined_message);k++){
-			//sprintf(msgStatus,"%02X", combined_message[k]);
-			//HAL_UART_Transmit(&huart2,(uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-		}
-
-		 //Inverted code
+		//Inverted code
 		for (int j = 1; j < total_length - 1; j++) {
 			if (combined_message[j] == 0x3C || combined_message[j] == 0x3D || combined_message[j] == 0x3E) {
 				// Update the total length to account for the additional character
@@ -1158,19 +1152,19 @@ uint8_t* send_custom_text(uint8_t *test_msg){
 				// Escape the special characters
 				combined_message[j+1] = ~combined_message[j];
 				combined_message[j] = 0x3D;
+
 				//combined_message[j+1] = ~combined_message[j];
 				// Increase j to skip the substituted part and avoid processing it again
 				j++;
 				sprintf(msgStatus, " \r\n New string if 3X \r\n ");
 				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-				for (i=0; i<total_length; i++){
+				for (i=0; i<total_length; i++) {
 					sprintf(msgStatus, "%02X",combined_message[i]);
 					//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 				}
 				sprintf(msgStatus, " \r\n %d END \r\n ", total_length);
 				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 			}
-
 		}
 
 		//Add checksum into the string
@@ -1181,277 +1175,152 @@ uint8_t* send_custom_text(uint8_t *test_msg){
 
 		// Check if checksum needs escaping
 		if (checksum == 0x3C || checksum == 0x3D || checksum == 0x3E) {
-		    // Update total length to accommodate escape marker and escaped checksum
-		    total_length += 1;
+			// Update total length to accommodate escape marker and escaped checksum
+			total_length += 1;
 
-		    // Append escape marker and escaped checksum
-		    combined_message[total_length - 3] = 0x3D;        // Escape marker
-		    combined_message[total_length - 2] = ~checksum;   // Escaped checksum value
+			// Append escape marker and escaped checksum
+			combined_message[total_length - 3] = 0x3D;        // Escape marker
+			combined_message[total_length - 2] = ~checksum;   // Escaped checksum value
 		} else {
-		    // Append checksum normally
-		    //total_length++;
-		    combined_message[total_length - 2] = checksum;    // Add checksum before the delimiter
+			// Append checksum normally
+			//total_length++;
+			combined_message[total_length - 2] = checksum;    // Add checksum before the delimiter
 		}
 
 		// Append the final delimiter (0x3C)
 		combined_message[total_length - 1] = 0x3E;
 
-
-
-		//sprintf(msgStatus, " \r\nChecksum2 %02X \r\n ",checksum2);
+		//sprintf(msgStatus, " \r\nChecksum2 %02X \r\n ",checksum2); //Checksum print
 		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-		//end_semih[0] = checksum;
-		for (i=0;i<sizeof(end_semih);i++){
-			sprintf(msgStatus, "%02X \r\n ",end_semih[i]);
-			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-		}
-
-
-		// Copy the end_semih array to the end of the combined_message
-		//memcpy(combined_message + sizeof(echecomm_header) + sizeof(semitechcomm_header) + new_text_len, end_semih, sizeof(end_semih));//new_text_len
 
 		sprintf(msgOut, "Sending \r\n  ");
 		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
-	       sprintf(msgStatus, "  \r\n Starts of message master \r\n ");
-	      // HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		sprintf(msgStatus, "  \r\n Starts of message master \r\n ");
+		// HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
-	       for (i=0; i<total_length; i++){
-	    	   sprintf(msgStatus, "%02X",combined_message[i]);
-	    	   //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	       }
-	       sprintf(msgStatus, " \r\n %d END \r\n ", total_length);
-	      // HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-			for (int i=0;i<total_length;i++){
-				sprintf(msgStatus,"%c", combined_message[i]);
-				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-				}
-
-//Sending string here with huart1
-	     //  HAL_UART_Transmit(&huart1, (uint8_t*)combined_message, total_length, 100);
-/*
-
-	       sprintf(msgStatus, " \r\n Received RX UART \r\n ");
-	       HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-
-	      //process_rx_message(rx_message, sizeof(rx_message));
-	       //process_rx_message(RxData, sizeof(RxData));
-
-	       if (temp[0] == '>'){
-	       			memcpy (FinalData, RxData, indx);
-	       			indx = 0;
-	       			packet_count++;
-	       			temp[0]='\0';
-	       		}
-	       		sprintf(msgOut,"\r\n Callback number %d\r\n",int_ctr);
-	       		//HAL_UART_Transmit(&huart2, (uint8_t *)msgOut, strlen(msgOut), HAL_MAX_DELAY);
-
-
-	       		 sprintf(msgStatus,"\r\n The string is: \r\n ");
-	       		 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	       		 for (int i=0;i<sizeof(FinalData);i++){
-	       			 sprintf(msgStatus,"%c", FinalData[i]);
-	       			 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	       			 }
-	       		 sprintf(msgStatus, "\n\r");
-	       		 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	       		 decode_finalData(FinalData);
-
-
-	       		 if (echealon_payload) {
-	       			 sprintf(msgStatus,"The condition is met (flag is true).\n");
-	       			 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	       		 	 char slave_reply[] = "\\I have received %d.";
-	       		 	 sprintf(msgStatus,"\r\n The Message Sent back to master is \n\r");
-	       		 	// HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	       		 	 //sprintf(buffer_slave_it,slave_reply,global_last_val);
-	       		 	//uint8_t* r2ss = send_custom_text(buffer_slave_it);
-
-	       		 	 } else {
-	       		 		 sprintf(msgStatus,"The condition is not met (flag is false).\n");
-	       		 		 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	       		 		    }
-	       		 echealon_payload = FALSE;*/
-	       		 memset(FinalData,'\0',sizeof(FinalData));
-
-
-	       // Print the total packet count
-	             sprintf(msgStatus, "\n \r Packet number %d \n \r", packet_count);
-	             //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-
-	/*       int packet_count = 0;
-	       int rbp=0;
-	       uint8_t rxin_buf[256]; //temporary buffer
-	       bool rbpkt = FALSE;
-	       for (int i = 0; i<sizeof(rx_message); i++){
-
-
-	       if(rx_message[i] == '<'){
-	    	   rbpkt = TRUE; //indicate beginning of packet
-	       }
-	       if(rbpkt){
-	    	   memset(rxin_buf,'\0',sizeof(rxin_buf));
-	    	   rxin_buf[rbp] = rx_message[i];
-	    	   if (rx_message[i]=='>'){
-	    		   rbpkt = FALSE;
-	    		   packet_count++;
-
-	    		   // Process the complete packet stored in rxin_buf
-	    		    sprintf(msgStatus, "Complete packet received: ");
-	    		    HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-	    		              for (int j = 0; j <= rbp; j++) {
-	    		                  sprintf(msgStatus, "%c", rxin_buf[j]);
-	    		                  HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-	    		              }
-
-	    		              sprintf(msgStatus, "\n\r");
-	    		              HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-	    	   }
-	    	   if (rbp < sizeof(rxin_buf) - 1) {
-	    	              rbp++;
-	    	          }
-	       }
-	       }
-		   sprintf(msgStatus,"\n \r Packet number %d \n \r", packet_count);
-		   HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);*/
-
-
-
-			//------------------------SPI -------------
-			uint8_t txData_getProtocol[] = {0x3C, 0x98, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00};
-			uint8_t semiTech_tstData[]={0x3C, 0x98, 0x01, 0x00, 0x00, 0x70, 0x00, 0x00,  0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xB0, 0x00, 0x64, 0x00, 0x09, 0x00,  0x30, 0x30, 0x36, 0x32, 0x33, 0x32, 0x35, 0x42, 0x54, 0x65, 0x73, 0x74, 0x20, 0x50, 0x61, 0x63, 0x6B, 0x65, 0x74, 0x20, 0x23, 0x39, 0x20, 0x31, 0x34, 0x3A, 0x31, 0x32, 0x3A, 0x35, 0x30, 0xFF,  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x89, 0x19, 0x18, 0x3E};
-
-			sprintf(msgStatus,"SPI Sample with TxData %c \r\n ", txData_getProtocol);
+		for (i=0; i<total_length; i++) {
+			sprintf(msgStatus, "%02X",combined_message[i]);
 			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		}
+		sprintf(msgStatus, " \r\n %d END \r\n ", total_length);
+		// HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
-			uint8_t total_length_gP = sizeof(txData_getProtocol);
-			uint8_t end_semih_gP[2]={0x00,0x3E};
-
-			uint8_t checksum_gP = checksum_packet(txData_getProtocol,total_length_gP); //total_length-2
-					//uint8_t checksum2 = checksum_packet(packetData,sizeof(packetData)-2);
-					sprintf(msgStatus, " \r\nChecksum %02X \r\n ",checksum_gP);
-					//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-					//sprintf(msgStatus, " \r\nChecksum2 %02X \r\n ",checksum2);
-					//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-					end_semih_gP[0] = checksum_gP;
-					for (i=0;i<sizeof(end_semih_gP);i++){
-						sprintf(msgStatus, " This is CS %02X \r\n ",end_semih_gP[i]);
-						//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-					}
-
-				    txData_getProtocol[6] = end_semih_gP[0];
-				    txData_getProtocol[7] = end_semih_gP[1];
-
-
-					// Copy the end_semih array to the end of the combined_message
-					//memcpy(txData_getProtocol + 8  , end_semih_gP , sizeof(end_semih_gP));//new_text_len
-
-
-			//uint8_t rxData_getProtocol[150];
-			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
-			memset(rxData_getProtocol, 0, sizeof(rxData_getProtocol));
-		//HAL_SPI_Transmit(&hspi2, (uint8_t *)txData_getProtocol, sizeof(txData_getProtocol), HAL_MAX_DELAY);
-
-		//HAL_SPI_Transmit(&hspi2, (uint8_t *)semiTech_tstData, sizeof(semiTech_tstData), HAL_MAX_DELAY);
-			//HAL_SPI_Transmit(&hspi2, (uint8_t *)combined_message, total_length, HAL_MAX_DELAY);
-
-
-
-	//		HAL_SPI_Transmit_IT(&hspi2, (uint8_t *)combined_message, total_length);
-			//HAL_SPI_TransmitReceive_IT(&hspi2, combined_message, rxData_getProtocol,sizeof(rxData_getProtocol));
-
-
-			//HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
-
-/*
-			HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
-			 HAL_StatusTypeDef result;
-			result = HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
-
-			// Check the result
-			    if (result == HAL_OK) {
-			        // DMA started successfully
-			        sprintf(msgStatus,"\r\n SPI reception started successfully\r\n");
-			        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-			    } else if (result == HAL_ERROR) {
-			        // There was an error
-			        sprintf(msgStatus,"\r\nError starting SPI reception\r\n");
-			        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-			    } else if (result == HAL_BUSY) {
-			        // SPI is busy
-			        sprintf(msgStatus,"\r\nSPI is busy\r\n");
-			        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-			    } else if (result == HAL_TIMEOUT) {
-			        // Timeout occurred
-			        sprintf(msgStatus,"\r\nTimeout while starting SPI reception\r\n");
-			        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-			    }
-
-			//****HAL_SPI_TransmitReceive_DMA(&hspi2, combined_message, rxData_getProtocol,sizeof(rxData_getProtocol));
-
-
-
-*/
-
-			sprintf(msgStatus, "\r\n TX String \r\n");
+		for (int i=0; i<total_length; i++) {
+			sprintf(msgStatus,"%c", combined_message[i]);
 			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-			sprintf(msgStatus, "\r\n Get Protocol \r\n");
-			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		}
 
+        //Transmit string here via UART
+		//  HAL_UART_Transmit(&huart1, (uint8_t*)combined_message, total_length, 100);
 
-			for (i=0; i<sizeof(combined_message); i++){
-				sprintf(msgStatus, "%02X",combined_message[i]);
-				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-				}
+		/*
+            Received RX UART
+            This code processes received UART data, extracts a packet, transmits information via UART, and responds based on a condition.
 
-			sprintf(msgStatus," \r\n the length is %d \r\n",sizeof(combined_message));
-			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+            sprintf(msgStatus, " \r\n Received RX UART \r\n ");
+            HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
+            //Look for a packet
 
-		//	sprintf(msgStatus, "\r\n SPI rxData_get \r\n");
-			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-			//for (int i = 0; i < sizeof(rxData_getProtocol); i++) {
-			        //    sprintf(msgStatus, "%02X", rxData_getProtocol[i]);
-			           // HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-			      //  }
+       if (temp[0] == '>'){
+        memcpy (FinalData, RxData, indx);
+        indx = 0;
+        packet_count++;
+        temp[0]='\0';
+        }
 
-			//if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_SET){
-				//HAL_SPI_Receive(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol), HAL_MAX_DELAY);
-				//HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));}
+        sprintf(msgOut,"\r\n Callback number %d\r\n",int_ctr);
+        HAL_UART_Transmit(&huart2, (uint8_t *)msgOut, strlen(msgOut), HAL_MAX_DELAY);
 
+        sprintf(msgStatus,"\r\n The string is: \r\n ");
+        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
+        for (int i=0;i<sizeof(FinalData);i++){
+            sprintf(msgStatus,"%c", FinalData[i]);
+            HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+        }
 
+        sprintf(msgStatus, "\n\r");
+            HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
+            decode_finalData(FinalData);
 
+            if (echealon_payload) {
+                sprintf(msgStatus,"The condition is met (flag is true).\n");
+                HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+                char slave_reply[] = "\\I have received %d.";
 
-	       //HAL_UART_Transmit_IT(&huart1,(uint8_t*)combined_message,total_length);
+                sprintf(msgStatus,"\r\n The Message Sent back to master is \n\r");
+                  HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
+                  sprintf(buffer_slave_it,slave_reply,global_last_val);
+                  uint8_t* r2ss = send_custom_text(buffer_slave_it);
 
+            } else {
+                sprintf(msgStatus,"The condition is not met (flag is false).\n");
+                 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+                 }
+            echealon_payload = FALSE;
+            memset(FinalData,'\0',sizeof(FinalData));*/
+
+		// Print the total packet count
+		//sprintf(msgStatus, "\n \r Packet number %d \n \r", packet_count);
+		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+		/*
+
+            This code is attempting to extract and process packets from the rx_message buffer. It identifies packets based on < (start) and > (end) delimiters and transmits them via UART.
+
+            int packet_count = 0;
+            int rbp=0;
+            uint8_t rxin_buf[256]; //temporary buffer
+            bool rbpkt = FALSE;
+            for (int i = 0; i<sizeof(rx_message); i++){
+                if(rx_message[i] == '<'){
+                    rbpkt = TRUE; //indicate beginning of packet
+                }
+                if(rbpkt){
+                 memset(rxin_buf,'\0',sizeof(rxin_buf));
+                 rxin_buf[rbp] = rx_message[i];
+                 if (rx_message[i]=='>'){
+                    rbpkt = FALSE;
+                    packet_count++;
+
+                    // Process the complete packet stored in rxin_buf
+                    sprintf(msgStatus, "Complete packet received: ");
+                  HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+                  for (int j = 0; j <= rbp; j++) {
+                      sprintf(msgStatus, "%c", rxin_buf[j]);
+                      HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+                      }
+
+                  sprintf(msgStatus, "\n\r");
+                  HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+                }
+                if (rbp < sizeof(rxin_buf) - 1) {
+                    rbp++;
+                }
+               }
+            }
+            sprintf(msgStatus,"\n \r Packet number %d \n \r", packet_count);
+            HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);*/
+
+		//This is the message that I´ll transmit
+		/*sprintf(msgStatus,"\n \r Packet to transmit %d \n \r");
+		HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		for (i=0; i<sizeof(combined_message); i++) {
+			sprintf(msgStatus, "%02X",combined_message[i]);
+			HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		}
+		sprintf(msgStatus," \r\n the length is %d \r\n",sizeof(combined_message));
+		HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);*/
 
 	}
-
-
-	/*//
-	for (i=0; i<sizeof(combined_message); i++){
-		sprintf(msgStatus, "%02X", combined_message[i]);
-		HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-	}*/
-
-
-	//send;
 	return (uint8_t*)combined_message;
-	//HAL_UART_Transmit(&huart1, (uint8_t*)combined_message, sizeof(combined_message), HAL_MAX_DELAY);
-
+	memset(combined_message,'\0',sizeof(combined_message));
 }
 
 
@@ -1835,7 +1704,7 @@ sprintf(msgStatus,"\rPWRLine data: semiTechLen=%d, echelonLen=%d, semitech_comma
             {
         	 int position = ptr_strmod1 - decoded_strSample;
         	 sprintf(msgStatus,"'%s' contains '%s' and is in %d \r\n", decoded_strSample, searchmod1, position);
-        	 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+        	 //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
         	 //result_Cogan= GetNumber(&decoded_strSample[position]);
         	 found_value = 1;
         	 mod1_count++;
@@ -1859,7 +1728,7 @@ sprintf(msgStatus,"\rPWRLine data: semiTechLen=%d, echelonLen=%d, semitech_comma
          {
         	 int position = ptr_strmod2 - decoded_strSample;
         	 sprintf(msgStatus,"'%s' contains '%s' and is in %d \r\n", decoded_strSample, searchmod2, position);
-        	 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+        	 //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
         	 //result_Cogan= GetNumber(&decoded_strSample[position]);
         	 found_value = 2;
@@ -1880,7 +1749,7 @@ sprintf(msgStatus,"\rPWRLine data: semiTechLen=%d, echelonLen=%d, semitech_comma
          {
         	 int position = ptr_strmod3 - decoded_strSample;
         	 sprintf(msgStatus,"'%s' contains '%s' and is in %d \r\n", decoded_strSample, searchmod3, position);
-        	 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+        	 //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
         	 //result_Cogan= GetNumber(&decoded_strSample[position]);
         	 found_value = 3;
         	 mod3_count++;
@@ -1900,7 +1769,7 @@ sprintf(msgStatus,"\rPWRLine data: semiTechLen=%d, echelonLen=%d, semitech_comma
                   {
                  	 int position = ptr_strmod4 - decoded_strSample;
                  	 sprintf(msgStatus,"'%s' contains '%s' and is in %d \r\n", decoded_strSample, searchmod4, position);
-                 	 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+                 	 //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
                  	 //result_Cogan= GetNumber(&decoded_strSample[position]);
                  	found_value = 4;
                  	 mod4_count++;
@@ -2326,16 +2195,21 @@ int UART1_Busy(void) {
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     if (GPIO_Pin == GPIO_PIN_1) {
 
+    	//if (!is_spi_receiving) {
 
-        sprintf(msgStatus, "\r\n Host request interruption \r\n");
-        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-        // Set SS (PB6) Low to select the slave
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 
-        //HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
-        //HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));//chnage dma to it
-        HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
-        }
+    	        is_spi_receiving = true;
+    	        sprintf(msgStatus, "\r\n Host request interruption \r\n");
+    	        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    	        // Set SS (PB6) Low to select the slave
+    	        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+
+    	        //HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
+    	        //HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));//chnage dma to it
+    	        HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(act_rx_packet)); //change of the size of packet
+
+    	//}
+    }
 }
 
 // Callback function called when SPI reception is complete
@@ -2345,9 +2219,23 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
 		    static bool inPacket = false;      // Flag to indicate if we are inside a packet
     if (hspi->Instance == SPI2) {
 
+    	is_spi_receiving = false;
+    	lastRX_time = HAL_GetTick();  // Update last reception time
 
     	sprintf(msgStatus, "\r\n SPI Rx Callback \r\n");
     	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+    	sprintf(msgStatus, "\r\n Received Packet RX: ");
+    	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+    	for (int j = 0; j < sizeof(rxData_getProtocol); j++) {
+    		sprintf(msgStatus, "%02X", rxData_getProtocol[j]);
+    		HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    		}
+    	sprintf(msgStatus, "\r\n");
+    	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+
 
     	for (int i=0; i<sizeof(rxData_getProtocol); i++){
     		uint8_t byte = rxData_getProtocol[i];
@@ -2356,11 +2244,15 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     			inPacket = true;
     			packetIndex = 0; // Reset packet index
     		}if (inPacket) {
-    			packetBuffer[packetIndex++] = byte;
-    			// Handle case where packet might exceed buffer
-    			if (packetIndex >= sizeof(packetBuffer)) {
-    				packetIndex = sizeof(packetBuffer) - 1;  // Prevent overflow
-    			}
+    		    if (packetIndex < sizeof(packetBuffer)) {  // Ensure we do NOT exceed buffer
+    		        packetBuffer[packetIndex++] = byte;
+    		    } else {
+    		        // Optional: Handle buffer overflow (e.g., stop processing)
+    		        inPacket = false;
+    		        packetIndex = 0;
+    		        sprintf(msgStatus, "\r\n Buffer Overflow Detected! Packet too large.\r\n");
+    		        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    		    }
     		}if (byte == 0x3E && inPacket) {
     			// End of packet detected, process the packet
     			// Check if packet contains at least the command position
@@ -2372,7 +2264,7 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     				if (command1 == 0x01 && command2 == 0x01) {
     					// Command 0101 - Transmit Confirmation
     					confirmationReceived = 1;  // Set confirmation flag
-    					sprintf(msgStatus, "\r\n Command: %02X%02X - Transmit Confirmation\r\n", command1, command2);
+    					//sprintf(msgStatus, "\r\n Command: %02X%02X - Transmit Confirmation\r\n", command1, command2);
     					//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
     					// Extract and check the result byte of packet confirm
     					uint8_t resultPC = packetBuffer[6];  // Result byte is at index 6 (after the length bytes)
@@ -2388,6 +2280,8 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     					        break;
     					    default:
     					        // Handle unexpected result values
+    					    	sprintf(msgStatus, "\r\n Unexpected resultPC: %02X\r\n", resultPC);
+    					    	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus),HAL_MAX_DELAY);
     					        break;
     					}
 
@@ -2421,27 +2315,29 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     						break;
     					default:
     						// Handle unexpected result values
+    						sprintf(msgStatus, "\r\n Unexpected resultPI: %02X\r\n", resultPI);
+    						HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
     						break;
     					}
 
 
-    					memcpy(FinalData, rxData_getProtocol, sizeof(rxData_getProtocol));//copy to buffer where it's going to be decoded
-    					//packetReady_2Dec = true; // Set flag for main loop processing
-    					result_dec = decode_finalData(FinalData);
+    					memcpy(FinalData, packetBuffer, sizeof(packetBuffer));//copy to buffer where it's going to be decoded
+    					packetReady_2Dec = true; // Set flag for main loop processing
+    					//result_dec = decode_finalData(FinalData);
 
-    					sprintf(msgStatus,"\r\n Result decoded en RX Callback %d \r\n",result_dec);
-    					HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    					//sprintf(msgStatus,"\r\n Result decoded en RX Callback %d \r\n",result_dec);
+    					//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
     					//Hasta aqui, se ha decodificado si la data viene del modulo uno, dos, etc
 
     	    			sprintf(msgStatus, "\r\n Received Packet: ");
-    	    			HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    	    			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
     	    			for (int j = 0; j < packetIndex; j++) {
-    	    				sprintf(msgStatus, "%02X", rxData_getProtocol[j]);
-    	    				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    	    				sprintf(msgStatus, "%02X", packetBuffer[j]);
+    	    				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
     	    			}
     	    			sprintf(msgStatus, "\r\n");
-    	    			HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    	    			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
     	    			memset(packetBuffer,'\0',sizeof(packetBuffer));
 
@@ -2456,8 +2352,8 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     			/*sprintf(msgStatus, "\r\n Received Packet: ");
     			HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
-    			for (int j = 0; j < sizeof(rxData_getProtocol); j++) {
-    				sprintf(msgStatus, "%02X", rxData_getProtocol[j]);
+    			for (int j = 0; j < sizeof(FinalData); j++) {
+    				sprintf(msgStatus, "%02X", FinalData[j]);
     				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
     			}
     			sprintf(msgStatus, "\r\n");
@@ -2466,10 +2362,10 @@ void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi) {
     			// display the result counts for debugging
     			//Packet confirmation
     			sprintf(msgStatus, "\r\n Result Packet Conf: Valid = %d, Channelbusy = %d, Transmit Error = %d\r\n",result0CountPC,result1CountPC,result2CountPC);
-    			HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
     			//Packet indication
     			sprintf(msgStatus, "\r\n Result Packet Ind: Valid = %d, CRC Error = %d, Framing Error = %d, Parity Error = %d, Receive Timeout = %d, Signal Loss = %d, Transmit Break = %d\r\n", validPacketCount, crcErrorCount, framingErrorCount, parityErrorCount, receiveTimeoutCount, signalLossCount, transmitBreakCount);
-    			HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    			//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
     			inPacket = false;  // Reset for the next packet
     			packetIndex = 0;
@@ -2490,7 +2386,7 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi){
 
 
 		sprintf(msgStatus, "\r\n SPI Tx Complete Callback \r\n");
-		HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
 	for (int i=0; i<sizeof(combined_message); i++){
 			sprintf(msgStatus, "%c",combined_message[i]);
@@ -2505,7 +2401,7 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi){
 		 // Set SS (PB6) High to deselect the slave
 		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
 		//Clear buffers
-		// memset(combined_message, 0, sizeof(combined_message)); // Clear the transmit buffer
+		memset(combined_message, 0, sizeof(combined_message)); // Clear the transmit buffer
 
 
 
@@ -2519,8 +2415,6 @@ void AppSlaveBoard(){
 
 	sprintf(msgStatus, "\r\n Wait slave mode on \r\n");
 	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-
-
 	//HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 	//HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
 	//memset(rxData_getProtocol, 0, sizeof(rxData_getProtocol));
@@ -2528,9 +2422,9 @@ void AppSlaveBoard(){
 	//HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 	//HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
 
-
-
 }
+
+
 void AppMasterBoard(){
 
 
@@ -2539,8 +2433,7 @@ void AppMasterBoard(){
 	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 
-	//HAL_TIM_Base_Start_IT(&htim3);
-	HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
+	HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(act_rx_packet)); //change of the size of packet
 
 
 	uint32_t startTime = HAL_GetTick(); // Track the start time
@@ -2568,6 +2461,11 @@ void AppMasterBoard(){
 		    HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 		}
 		last_transmission_state = transmission_state;
+
+		if (packetReady_2Dec == true){
+			result_dec = decode_finalData(FinalData);
+			packetReady_2Dec = false;
+		}
 
 		switch (transmission_state) {
 
@@ -2600,16 +2498,16 @@ void AppMasterBoard(){
 		case TRANSMISSION_DONE:
 			uint32_t spiError = HAL_SPI_GetError(&hspi2);
 			HAL_TIM_Base_Stop_IT(&htim3);
-			//uint32_t startedTransmission_tick = HAL_GetTick();
+
 			if (HAL_SPI_GetState(&hspi2) == HAL_SPI_STATE_READY) {//HAL_GetTick() - transmission_timestamp >= transmission_delay timerFlag
-				//timerFlag = 0;
-				// Execute the transmission after delay
+
 				transmission_state = WAITING_FOR_PREV_MODULE;
 				sprintf(msgStatus, "\r\n Transmission executed \r\n");
-		        // HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
 			}else if(spiError != HAL_SPI_ERROR_NONE){
 				sprintf(msgStatus, "\r\n SPI Error: 0x%08lx \r\n", spiError);
-				// HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 		    }
 		break;
 		case WAITING_FOR_PREV_MODULE:
@@ -2618,33 +2516,240 @@ void AppMasterBoard(){
 		    //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 		break;
 		case MONITOR_ORDER_MODULES:
-			//if (packetReady_2Dec) {
-			//packetReady_2Dec = false; // Reset the flag
-			//
-			//result_dec = decode_finalData(FinalData);
-			next = next_module(result_dec);
-			sprintf(msgStatus, "\r\n Next module %d \r\n", next);
-		    //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+			if (module_x == 1){
 
-			// If the next value is the one before my position, print the message
-			if (next == module_x ) {
-				result_dec=254;
-				sprintf(msgStatus, "\r\n I'm next! Rd= %d \r\n",result_dec);
-				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+			//Module 1 sample
+			//I can't decode one as I send module 1 packet, however,
+			if (result_dec == 2){
+				next = next_module(result_dec);//next is equal to 2
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				sprintf(msgStatus, "\r\n My packet went through cause I see %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
-				transmission_state = READY_FOR_TRANSMISSION;
-			}else {
-				sprintf(msgStatus, "\r\n Decoded module: %d\n", result_dec);
-				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-				//transmission_state = WAITING_FOR_PREV_MODULE;
 			}
-		break;
+			if (result_dec == 3){
+				next = next_module(result_dec);//next is equal to 3
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+				}
+			if (result_dec == 4){
+				next = next_module(result_dec);//next is equal to 1
+				sprintf(msgStatus, "\r\n Next module %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				if (next == module_x) {
+					result_dec=254;
+					sprintf(msgStatus, "\r\n I'm next! Rd= %d \r\n",result_dec);
+					HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+					transmission_state = READY_FOR_TRANSMISSION;
+					}
+				}
+			if (result_dec == 254){
+				sprintf(msgStatus, "\r\n reset decoded value %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				}
+			}
+			if(module_x == 2){
+
+
+			//Module 2 sample
+			if (result_dec == 1){
+				next = next_module(result_dec);//next is equal to 2
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				if (next == module_x) {
+					result_dec=254;
+					sprintf(msgStatus, "\r\n I'm next! Rd= %d \r\n",result_dec);
+					HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+					transmission_state = READY_FOR_TRANSMISSION;
+					}
+				}
+			//I can't decode two as I send module 2 packet, however,
+			if (result_dec == 3){
+				next = next_module(result_dec);//next is equal to 3
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				sprintf(msgStatus, "\r\n My packet went through cause I see %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				}
+			if (result_dec == 4){
+				next = next_module(result_dec);//next is equal to 1
+				sprintf(msgStatus, "\r\n Next module %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				}
+			if (result_dec == 254){
+				sprintf(msgStatus, "\r\n reset decoded value %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				}
+
+			}
+			if (module_x == 3){
+
+
+			//Module 3 sample
+			if (result_dec == 1){
+				next = next_module(result_dec);//next is equal to 2
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+			}
+			if (result_dec == 2){
+				next = next_module(result_dec);//next is equal to 3
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				if (next == module_x) {
+					result_dec=254;
+					sprintf(msgStatus, "\r\n I'm next! Rd= %d \r\n",result_dec);
+					HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+					transmission_state = READY_FOR_TRANSMISSION;
+					}
+			}
+			//I can't decode three as I send module 3 packet, however,
+			if (result_dec == 4){
+				next = next_module(result_dec);//next is equal to 4
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				sprintf(msgStatus, "\r\n My packet went through cause I see %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+			}
+			if (result_dec == 254){
+				sprintf(msgStatus, "\r\n reset decoded value %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+			}
+			}
+
+			if (module_x == 4){
+			//Module 4 sample
+			if (result_dec == 1){
+				next = next_module(result_dec);//next is equal to 2
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				sprintf(msgStatus, "\r\n My packet went through cause I see %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+			}
+			if (result_dec == 2){
+				next = next_module(result_dec);//next is equal to 3
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+			}
+
+			if (result_dec == 3){
+				next = next_module(result_dec);//next is equal to 4
+				sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				if (next == module_x) {
+					result_dec=254;
+					sprintf(msgStatus, "\r\n I'm next! Rd= %d \r\n",result_dec);
+					HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+					transmission_state = READY_FOR_TRANSMISSION;
+					}
+
+			}
+			//I can't decode four as I send module 4 packet, however,
+			if (result_dec == 254){
+				sprintf(msgStatus, "\r\n reset decoded value %d \r\n",result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+			}
+			}
+
+
+
+
+			/*
+
+			uint8_t last_decoded = 0;  // Stores last successfully decoded module
+			uint8_t expected = (module_x == 1) ? 4 : module_x - 1;
+
+			if (result_dec == expected) {
+				sprintf(msgStatus,"\r\n Received expected module %d, processing...\n", result_dec);
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				last_decoded = result_dec;
+
+				if (next == module_x) {
+					result_dec=254;
+					sprintf(msgStatus, "\r\n I'm next! Rd= %d \r\n",result_dec);
+					HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+					transmission_state = READY_FOR_TRANSMISSION;
+				}
+			} else if (result_dec == next_module(module_x)) {
+				sprintf(msgStatus,"\r\n Received module %d, confirming my message was sent correctly. Next expected: %d\r\n", result_dec, next_module(module_x));
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+			} else {
+			    	sprintf(msgStatus,"\r\n Unexpected module %d received. Possible missing packet!\r\n", result_dec);
+			    	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+			    }
+			if ((HAL_GetTick() - lastRX_time) >= TIMEOUT_MT) {  // 2 seconds passed?
+				sprintf(msgStatus, "\r\n Havn't received in a while \r\n");
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				lastRX_time = HAL_GetTick();  // Reset timer to prevent continuous printing
+			}*/
+
+
+/*
+
+
+
+					//if (packetReady_2Dec) {
+					//packetReady_2Dec = false; // Reset the flag
+					//
+					//result_dec = decode_finalData(FinalData);
+					next = next_module(result_dec);
+					sprintf(msgStatus, "\r\n Next module %d \r\n", next);
+				    //HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+					following_mod_x=next_module(module_x);
+
+					if ((is_spi_receiving == false) && (HAL_GetTick() - lastRX_time) >= TIMEOUT_MT) {  // 2 seconds passed?
+						sprintf(msgStatus, "\r\n Havn't received in a while \r\n");
+						HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+						lastRX_time = HAL_GetTick();  // Reset timer to prevent continuous printing
+					    }
+
+					// If the next value is the one before my position, print the message
+					if (next == module_x ) {
+						result_dec=254;
+						sprintf(msgStatus, "\r\n I'm next! Rd= %d \r\n",result_dec);
+						//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+
+						transmission_state = READY_FOR_TRANSMISSION;
+
+						// Check if 4 is the next in the sequence
+						if(following_mod_x == result_dec){
+							sprintf(msgStatus, "\r\n Transmitted successfully %d \r\n", following_mod_x);
+							HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+						}
+						/*else if ((is_spi_receiving == false) && (HAL_GetTick() - lastRX_time) >= TIMEOUT_MT) {  // 2 seconds passed?
+							sprintf(msgStatus, "\r\n Havn't received in a while \r\n");
+							HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+							lastRX_time = HAL_GetTick();  // Reset timer to prevent continuous printing
+							transmission_state = READY_FOR_TRANSMISSION;
+						    }*/
+
+
+					/*}else {
+						sprintf(msgStatus, "\r\n Result decoded  %d\n", result_dec);
+						//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+						//transmission_state = WAITING_FOR_PREV_MODULE;
+					}*/
+
+				break;
+
 
 		}
 
-	}
+		HAL_Delay(1); // Add a small delay to yield control
 
+
+
+
+	}
 }
+
+
 
 
 
@@ -2700,9 +2805,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 
 		sprintf(msgStatus, "\r\n Timer callback executed \r\n");
-		HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
-		start_transmission();
-		transmission_state = TRANSMISSION_DONE;
+		//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		// Check if SPI is ready before starting new transmission
+		 if (HAL_SPI_GetState(&hspi2) == HAL_SPI_STATE_READY) {
+			 start_transmission();
+			 transmission_state = TRANSMISSION_DONE;
+		 } else {
+			 sprintf(msgStatus, "\r\n SPI is busy, skipping transmission \r\n");
+			 HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+		}
+
 
 
 
@@ -2712,34 +2824,39 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 
 void start_transmission(void){
 
-				//HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
-				//led_state=HAL_GPIO_ReadPin(GPIOA,GPIO_PIN_5);
-				sprintf(msgStatus, "\r\n start transmits fun \r\n");
-				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+	//HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
+	//led_state=HAL_GPIO_ReadPin(GPIOA,GPIO_PIN_5);
 
-				// Set SS (PB6) Low to select the slave
-				HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
-				sprintf(buffer2,test_msg_danv5,counterPacket);
-				uint8_t* r2s = send_custom_text(buffer2);
-				memset(buffer2,'\0',sizeof(buffer2));
+	sprintf(msgStatus, "\r\n start transmits fun \r\n");
+	//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 
-				sprintf(msgStatus, "\r\n GPIO pin is HIGH  \r\n");
-				//HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+	// Set SS (PB6) Low to select the slave
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 
-				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5,GPIO_PIN_SET);
-				//HAL_SPI_Transmit_IT(&hspi2, (uint8_t *)combined_message, total_length);
-				confirmationReceived = 0;
-				counterPacket++;
-				//HAL_SPI_TransmitReceive_IT(&hspi2, combined_message, rxData_getProtocol,sizeof(rxData_getProtocol));
-				//HAL_SPI_Transmit_DMA(&hspi2, (uint8_t *)combined_message, total_length);
-				//HAL_SPI_Transmit_DMA(&hspi2, (uint8_t *)combined_message, total_length);//change dma to it
+	sprintf(buffer2,test_msg_danv5,counterPacket);
+	uint8_t* r2s = send_custom_text(buffer2);
+	memset(buffer2,'\0',sizeof(buffer2));
 
-				HAL_SPI_Transmit_IT(&hspi2, (uint8_t *)combined_message, total_length);
-				HAL_GPIO_TogglePin(Timer_GPIO_Port, Timer_Pin);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5,GPIO_PIN_SET);
+	confirmationReceived = 0;
+	counterPacket++;
+
+	HAL_SPI_Transmit_IT(&hspi2, (uint8_t *)combined_message, total_length);
+	HAL_GPIO_TogglePin(Timer_GPIO_Port, Timer_Pin);
 }
 
 uint8_t next_module(uint8_t x) {
     return ((x == 4) ? 1 : x + 1);
+}
+
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI2) {
+
+        uint32_t errorCode = HAL_SPI_GetError(hspi);
+        sprintf(msgStatus, "\r\n SPI Error: 0x%08lx \r\n", errorCode);
+        HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+    }
 }
 
 
