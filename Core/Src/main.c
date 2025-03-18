@@ -189,6 +189,8 @@ typedef struct
 
 /* Private variables ---------------------------------------------------------*/
 SPI_HandleTypeDef hspi2;
+DMA_HandleTypeDef hdma_spi2_rx;
+DMA_HandleTypeDef hdma_spi2_tx;
 
 TIM_HandleTypeDef htim3;
 
@@ -265,6 +267,7 @@ int des_length=10;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_USART2_UART_Init(void);
@@ -422,6 +425,8 @@ static int counterPacket=1;
   static int signalLossCount = 0;
   static int transmitBreakCount = 0;
 
+  static int loss_trans_count = 0;
+
 
   volatile uint32_t buttonPressCount = 0;
   volatile uint8_t isReceivingData = 0;
@@ -503,6 +508,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART1_UART_Init();
   MX_SPI2_Init();
   MX_USART2_UART_Init();
@@ -650,9 +656,9 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 63;
+  htim3.Init.Prescaler = 15;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 62499;
+  htim3.Init.Period = 49999;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -739,6 +745,25 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+  /* DMA1_Stream4_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
 
 }
 
@@ -2206,7 +2231,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
     	        //HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));
     	        //HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(rxData_getProtocol));//chnage dma to it
-    	        HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(act_rx_packet)); //change of the size of packet
+    	        //HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(act_rx_packet)); //change of the size of packet
+    	        HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(act_rx_packet));
 
     	//}
     }
@@ -2433,7 +2459,8 @@ void AppMasterBoard(){
 	HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 
-	HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(act_rx_packet)); //change of the size of packet
+	//HAL_SPI_Receive_IT(&hspi2, rxData_getProtocol, sizeof(act_rx_packet)); //change of the size of packet
+	HAL_SPI_Receive_DMA(&hspi2, rxData_getProtocol, sizeof(act_rx_packet));
 
 
 	uint32_t startTime = HAL_GetTick(); // Track the start time
@@ -2457,7 +2484,7 @@ void AppMasterBoard(){
 
 		if (transmission_state != last_transmission_state){
 
-		    sprintf(msgStatus, "\r\n Result decoded: %d, Current state: %d, Next mod: %d \r\n", result_dec, transmission_state, next);
+		    sprintf(msgStatus, "\r\n Result decoded: %d, Current state: %d, Next mod: %d Module one RS: %d \r\n", result_dec, transmission_state, next, loss_trans_count);
 		    HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 		}
 		last_transmission_state = transmission_state;
@@ -2549,6 +2576,14 @@ void AppMasterBoard(){
 				sprintf(msgStatus, "\r\n reset decoded value %d \r\n",result_dec);
 				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
 				}
+
+			if ((HAL_GetTick() - lastRX_time) >= TIMEOUT_MT) {  // 2 seconds passed?
+				sprintf(msgStatus, "\r\n Havn't received in a while \r\n");
+				HAL_UART_Transmit(&huart2, (uint8_t *)msgStatus, strlen(msgStatus), HAL_MAX_DELAY);
+				lastRX_time = HAL_GetTick();  // Reset timer to prevent continuous printing
+				loss_trans_count++;
+				transmission_state = READY_FOR_TRANSMISSION;
+			}
 			}
 			if(module_x == 2){
 
@@ -2841,7 +2876,9 @@ void start_transmission(void){
 	confirmationReceived = 0;
 	counterPacket++;
 
-	HAL_SPI_Transmit_IT(&hspi2, (uint8_t *)combined_message, total_length);
+	//HAL_SPI_Transmit_IT(&hspi2, (uint8_t *)combined_message, total_length);//Change IT into DMA
+	HAL_SPI_Transmit_DMA(&hspi2, (uint8_t *)combined_message, total_length);
+
 	HAL_GPIO_TogglePin(Timer_GPIO_Port, Timer_Pin);
 }
 
